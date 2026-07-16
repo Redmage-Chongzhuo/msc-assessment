@@ -1,0 +1,33 @@
+LLM retry and fallback findings
+
+1. The main model request uses:
+   anthropic.beta.messages.create({ ...params, stream: true })
+
+2. The main call chain is:
+   query()
+   -> deps.callModel
+   -> queryModelWithStreaming()
+   -> queryModel()
+   -> anthropic.beta.messages.create(...)
+
+3. The main request is wrapped by withRetry(), while SDK-level retries are disabled with maxRetries: 0 to avoid duplicate retry systems.
+
+4. Streaming failures can trigger a non-streaming fallback through executeNonStreamingRequest().
+
+5. A 404 from the streaming endpoint also triggers the non-streaming fallback.
+
+6. Consecutive HTTP 529 overload errors are counted. The fallback threshold is:
+   MAX_529_RETRIES = 3
+
+7. After three qualifying 529 errors, the system can switch to a configured fallback model and retry the full request.
+
+8. Retry delay uses exponential backoff:
+   BASE_DELAY_MS = 500
+   delay = 500 * 2^(attempt - 1), with up to 25% random jitter and a maximum delay cap.
+
+9. Most non-foreground requests stop immediately on HTTP 529 by throwing CannotRetryError.
+
+10. Foreground or correctness-critical requests may retry, including main REPL queries, SDK requests, agents, compact operations, hooks, verification agents, side questions, and selected security classifiers.
+
+11. Sustainability relevance:
+    Retry and fallback mechanisms can increase model inference and network activity during failures. However, the implementation reduces retry amplification by disabling SDK auto-retries, using exponential backoff, limiting 529 retries, and dropping most background requests immediately during overload.

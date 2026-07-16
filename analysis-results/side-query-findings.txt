@@ -1,0 +1,91 @@
+Side Query auxiliary LLM findings
+
+1. sideQuery() is a shared wrapper for non-streaming auxiliary LLM requests. It calls:
+   client.beta.messages.create(...)
+
+2. Its default configuration is:
+   - max_tokens = 1024
+   - maxRetries = 2
+   - source = 'side_query'
+
+3. sideQuery() passes maxRetries directly to getAnthropicClient(...). It does not add a separate withRetry() layer, so SDK/client retries and manual retries are not stacked.
+
+4. It supports configurable models, system prompts, tools, forced tool choice, structured output, temperature, stop sequences, thinking budgets, and AbortSignal cancellation.
+
+5. Thinking can be explicitly disabled. When a numeric thinking budget is supplied, it is capped at:
+   min(thinking, max_tokens - 1)
+
+6. Auto Mode action classification is the highest-risk auxiliary path:
+   - safe allowlisted tools bypass the classifier
+   - actions with no classifier-relevant input also bypass it
+   - two-stage mode runs a low-cost Stage 1 first
+   - Stage 1 uses 64 tokens, or 256 in fast-only mode
+   - an allow decision returns immediately
+   - otherwise Stage 2 may run with max_tokens = 4096
+   - thinking mode skips Stage 1 and runs Stage 2 directly
+   - when two-stage mode is disabled, one 4096-token single-stage request is used
+
+7. Auto Mode classifier retries use getDefaultMaxRetries(), whose default is 10 and can be overridden by:
+   CLAUDE_CODE_MAX_RETRIES
+
+8. Retryable conditions include connection errors, HTTP 408, 409, selected 429 responses, 401, revoked-token 403 responses, and HTTP 5xx errors. Server retry headers and subscription type affect retry decisions.
+
+9. The two-stage classifier uses prompt caching so Stage 2 can reuse the transcript and action prefix from Stage 1.
+
+10. Auto Mode classification can also run once when a sub-agent finishes and hands control back to the main agent, but only when:
+    - TRANSCRIPT_CLASSIFIER is enabled
+    - permission mode is auto
+    - a usable agent transcript exists
+
+11. Memory relevance selection:
+    - scans memory files locally first
+    - skips the LLM call when no unsurfaced memories remain
+    - uses the default Sonnet model
+    - uses max_tokens = 256
+    - sends the query, memory manifest, and recent tool names
+    - uses structured JSON output
+    - returns at most 5 selected memories
+    - uses the default 2 retries
+
+12. Session Search:
+    - returns immediately for an empty query or no sessions
+    - locally pre-filters sessions before the LLM call
+    - limits candidates to MAX_SESSIONS_TO_SEARCH = 100
+    - uses the small fast model
+    - uses the default max_tokens = 1024 and maxRetries = 2
+    - may concurrently load full transcripts for candidate lite logs
+
+13. Model validation:
+    - rejects empty or non-allowlisted model names locally
+    - skips API calls for known aliases, prevalidated custom models, and cached valid models
+    - uses max_tokens = 1
+    - uses maxRetries = 0
+    - sends only a minimal "Hi" request
+    - caches successful validations in validModelCache
+
+14. Permission explanation:
+    - is enabled by default but can be disabled
+    - is created lazily only when the user requests it from the permission UI
+    - the same promise is reused during the component lifecycle
+    - uses the main-loop model
+    - uses the default max_tokens = 1024 and maxRetries = 2
+    - includes at most the last 3 assistant messages and caps that conversation context at 1000 characters
+    - uses forced tool output and schema validation
+    - its independently created AbortSignal is not actively cancelled
+
+15. Auto Mode rule critique:
+    - is explicitly user-triggered
+    - skips the LLM request when no custom rules exist
+    - uses the selected or main-loop model
+    - uses max_tokens = 4096
+    - includes the full classifier prompt and custom rule set
+
+16. Chrome MCP:
+    - exposes sideQuery as a callback only for ant users
+    - supports a lightning-mode browser agent loop
+    - model and max_tokens are supplied by the caller
+    - one browser task may invoke the callback repeatedly across loop iterations
+    - public users do not receive this capability
+
+17. Sustainability relevance:
+    Auxiliary LLM calls can add hidden inference, networking, and retry overhead beyond the main conversation request. The largest risks are repeated security classification, multi-stage classification, long session or memory manifests, and loop-driven Chrome requests. Mitigations include local pre-filtering, allowlists, early returns, caching, small-model selection, token limits, prompt caching, lazy execution, structured output, and cancellation support.

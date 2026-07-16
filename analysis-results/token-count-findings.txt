@@ -1,0 +1,38 @@
+Token counting findings
+
+1. The preferred token counting path uses:
+   anthropic.beta.messages.countTokens(...)
+
+2. This is a specialized token-counting API rather than a normal model response generation request.
+
+3. The token-count client is configured with:
+   maxRetries: 1
+   source: 'count_tokens'
+
+4. On Bedrock, the code uses a separate countTokensWithBedrock(...) implementation.
+
+5. If the preferred countTokens request fails or returns null, the system calls:
+   countTokensViaHaikuFallback(...)
+
+6. The fallback uses anthropic.beta.messages.create(...), which is a real model inference request.
+
+7. The fallback normally uses the small fast model (Haiku), but may use Sonnet for Vertex global endpoints or some Vertex/Bedrock requests containing thinking blocks.
+
+8. Fallback output is tightly constrained:
+   - max_tokens is normally 1
+   - thinking requests use a limited token-count thinking budget
+   - the returned usage.input_tokens value is used as the estimate
+
+9. Context analysis counts several categories:
+   - tool definition schemas
+   - individual system prompt sections
+   - memory files such as CLAUDE.md
+   - custom agent descriptions
+   - the complete microcompacted message history
+
+10. System prompt sections, memory files, and custom agents are counted using Promise.all(...), so multiple token-count network requests may run concurrently.
+
+11. These requests are primarily triggered by the user-invoked context command in interactive or non-interactive mode, rather than automatically on every normal conversation turn.
+
+12. Sustainability relevance:
+    Context diagnostics can create multiple auxiliary network requests, and failed token-count requests can trigger additional LLM inference. The implementation limits impact by using a dedicated counting API first, invoking model fallback only on failure, preferring a small model, and tightly limiting generated output.

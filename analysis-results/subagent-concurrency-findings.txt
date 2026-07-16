@@ -1,0 +1,156 @@
+Subagent Concurrency Findings
+=============================
+
+1. Analysis target:
+   Claude Code Subagent creation, concurrent execution, background lifecycle,
+   cancellation behavior, and resource-growth controls.
+
+2. Primary files:
+   src/tools/AgentTool/AgentTool.tsx
+   src/tools/AgentTool/runAgent.ts
+   src/tasks/LocalAgentTask/LocalAgentTask.tsx
+   src/services/tools/toolOrchestration.ts
+
+3. AgentTool input granularity:
+   AgentTool's base input schema accepts one description, one prompt, one
+   optional subagent_type, one optional model, and one run_in_background flag.
+
+4. Evidence:
+   src/tools/AgentTool/AgentTool.tsx:81-88
+
+5. Interpretation:
+   A single AgentTool invocation describes one Subagent task. The input schema
+   does not accept an array of prompts or an array of Subagents.
+
+6. Multiple Subagent creation:
+   Multiple Subagents are created through multiple AgentTool tool-use blocks,
+   rather than through one AgentTool call containing a batch.
+
+7. Concurrency classification:
+   AgentTool explicitly declares itself concurrency-safe.
+
+8. Evidence:
+   src/tools/AgentTool/AgentTool.tsx:1273-1275
+
+9. Relevant implementation:
+   isConcurrencySafe() {
+     return true;
+   }
+
+10. Same-turn concurrency:
+    When one assistant response contains multiple AgentTool calls, the tool
+    orchestration layer may classify all of them as concurrency-safe and execute
+    them concurrently.
+
+11. Per-batch concurrency control:
+    This concurrency is subject to the general tool-use concurrency controller
+    previously identified in toolOrchestration.ts.
+
+12. Default concurrent tool limit:
+    The previously analysed tool orchestration code uses a default maximum tool
+    concurrency of 10, configurable through
+    CLAUDE_CODE_MAX_TOOL_USE_CONCURRENCY.
+
+13. Important distinction:
+    The limit applies to concurrent tool executions in a tool-use batch. It is
+    not evidence of a global maximum number of already-running background
+    Subagents.
+
+14. Asynchronous Subagent registration:
+    AgentTool calls registerAsyncAgent(...) before starting the asynchronous
+    lifecycle.
+
+15. Registration behavior:
+    registerAsyncAgent creates a LocalAgentTaskState with status "running" and
+    isBackgrounded set to true, then registers it in AppState.
+
+16. Evidence:
+    src/tasks/LocalAgentTask/LocalAgentTask.tsx:466-511
+
+17. Independent agent execution:
+    After registration, AgentTool starts the asynchronous lifecycle through an
+    unawaited void expression.
+
+18. Evidence:
+    src/tools/AgentTool/AgentTool.tsx:728-744
+
+19. Relevant execution path:
+    void runWithAgentContext(...runAsyncAgentLifecycle({
+      ...
+      makeStream: (...) => runAgent(...)
+    }))
+
+20. Interpretation:
+    The AgentTool call can return after launching the background task, while the
+    detached lifecycle continues executing an independent runAgent() stream.
+
+21. Model-call multiplication:
+    Each concurrently running Subagent has its own runAgent() loop and can make
+    its own repeated model calls and tool calls.
+
+22. Resource implication:
+    N concurrently active Subagents may multiply model inference, token use,
+    network activity, tool execution, subprocesses, and file-system operations.
+
+23. Background-task control:
+    Background tasks can be disabled with:
+    CLAUDE_CODE_DISABLE_BACKGROUND_TASKS
+
+24. Auto-background behavior:
+    Foreground agents may automatically become background tasks after 120,000
+    ms when CLAUDE_AUTO_BACKGROUND_TASKS or the relevant feature gate is active.
+
+25. Evidence:
+    src/tools/AgentTool/AgentTool.tsx:62-76
+
+26. Cancellation behavior:
+    Background Subagents created from the main AgentTool path are intentionally
+    not linked to the parent thread's AbortController.
+
+27. Evidence:
+    src/tools/AgentTool/AgentTool.tsx:690-697
+
+28. Consequence:
+    Pressing ESC to cancel the main thread does not necessarily cancel already
+    launched background Subagents. They must be killed explicitly through the
+    agent-task management path.
+
+29. Parent-child cancellation exception:
+    registerAsyncAgent supports an optional parentAbortController and creates a
+    child AbortController when one is supplied. This is used for contexts whose
+    lifecycle must remain linked, such as certain in-process teammate paths.
+
+30. Local growth restrictions:
+    Several restrictions reduce recursive or nested growth:
+    - Fork workers cannot recursively create another fork worker.
+    - Teammates cannot spawn nested teammates because the team roster is flat.
+    - In-process teammates cannot launch background agents.
+    These are local restrictions and do not establish a global Subagent cap.
+
+31. Global Subagent limit search:
+    Searches in AgentTool, LocalAgentTask, and swarm code found no clearly named
+    global Agent concurrency limit, semaphore, queue, or rejection condition.
+
+32. Qualified conclusion:
+    No global accumulated-background-Subagent cap was identified in the
+    inspected paths. This does not prove that no indirect limit exists elsewhere,
+    but no direct implementation evidence was found.
+
+33. Main concurrency chain:
+    One assistant turn
+      -> multiple AgentTool tool-use blocks
+      -> AgentTool.isConcurrencySafe() returns true
+      -> tool orchestrator executes calls concurrently
+      -> each call registers one Subagent
+      -> each Subagent independently runs runAgent()
+      -> asynchronous agents may continue after the parent tool batch completes
+
+34. Sustainability relevance:
+    Concurrent Subagents can substantially amplify compute and energy demand
+    because each Subagent runs an independent agentic model-and-tool loop.
+    Per-batch tool concurrency limits constrain simultaneous launch activity,
+    while cancellation controls, background-task disabling, fork recursion
+    guards, and teammate restrictions reduce some uncontrolled growth.
+    However, detached background agents can survive cancellation of the main
+    thread, and no explicit global limit on accumulated running background
+    Subagents was found in the inspected implementation.

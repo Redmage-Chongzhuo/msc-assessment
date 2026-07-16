@@ -1,0 +1,202 @@
+{
+  "version": 2,
+  "assessmentModel": {
+    "dimensions": [
+      "resourceActivity",
+      "amplificationFactors",
+      "mitigations",
+      "assessment"
+    ],
+    "levels": [
+      "high",
+      "medium",
+      "low",
+      "controlled",
+      "none"
+    ]
+  },
+  "fixtures": [
+    {
+      "file": "fixtures/positive/polling-loop.ts",
+      "expectedFindings": [
+        {
+          "ruleId": "SUS001",
+          "kind": "polling-loop",
+          "line": 3,
+          "callee": "fetch",
+          "resourceActivity": {
+            "type": "network",
+            "operation": "http-request"
+          },
+          "amplificationFactors": {
+            "insideLoop": true,
+            "loopType": "while-true",
+            "unboundedLoop": true,
+            "delayMs": 1000
+          },
+          "mitigations": {
+            "delayBetweenCalls": true,
+            "explicitMaximumIterations": false,
+            "timeout": false,
+            "abortSignal": false
+          },
+          "assessment": {
+            "level": "high",
+            "isSustainabilityConcern": true,
+            "reason": "A network request is repeatedly executed inside an unbounded polling loop."
+          }
+        }
+      ]
+    },
+    {
+      "file": "fixtures/positive/llm-retry.ts",
+      "expectedFindings": [
+        {
+          "ruleId": "SUS002",
+          "kind": "llm-retry",
+          "line": 16,
+          "callee": "callModel",
+          "resourceActivity": {
+            "type": "llm",
+            "operation": "model-inference"
+          },
+          "amplificationFactors": {
+            "insideLoop": true,
+            "retry": true,
+            "maxRetries": 3,
+            "maxAttempts": 4,
+            "backoff": true
+          },
+          "mitigations": {
+            "boundedRetries": true,
+            "backoff": true,
+            "timeout": false,
+            "abortSignal": false
+          },
+          "assessment": {
+            "level": "medium",
+            "isSustainabilityConcern": true,
+            "reason": "Model inference may be repeated up to four times, but retry growth is explicitly bounded."
+          }
+        }
+      ]
+    },
+    {
+      "file": "fixtures/positive/side-query.ts",
+      "expectedFindings": [
+        {
+          "ruleId": "SUS003",
+          "kind": "side-query",
+          "line": 15,
+          "callee": "sideQuery",
+          "resourceActivity": {
+            "type": "llm",
+            "operation": "auxiliary-model-inference"
+          },
+          "amplificationFactors": {
+            "insideLoop": false,
+            "retry": false,
+            "concurrent": false,
+            "additionalModelCall": true
+          },
+          "mitigations": {
+            "maxTokens": 64,
+            "abortSignal": true
+          },
+          "assessment": {
+            "level": "low",
+            "isSustainabilityConcern": true,
+            "reason": "The helper performs an additional model inference, but token use is limited and cancellation is supported."
+          }
+        }
+      ]
+    },
+    {
+      "file": "fixtures/positive/concurrent-agents.ts",
+      "expectedFindings": [
+        {
+          "ruleId": "SUS004",
+          "kind": "concurrent-agents",
+          "line": 16,
+          "callee": "runAgent",
+          "resourceActivity": {
+            "type": "agent",
+            "operation": "agent-execution"
+          },
+          "amplificationFactors": {
+            "promiseAll": true,
+            "concurrent": true,
+            "staticTaskCount": 3,
+            "independentAgentExecutions": true
+          },
+          "mitigations": {
+            "concurrencyLimit": null,
+            "abortSignal": false,
+            "timeout": false
+          },
+          "assessment": {
+            "level": "high",
+            "isSustainabilityConcern": true,
+            "reason": "Three independent agent executions are launched concurrently without an explicit local concurrency bound."
+          }
+        }
+      ]
+    },
+    {
+      "file": "fixtures/negative/local-loop.ts",
+      "expectedFindings": [],
+      "expectedAssessment": {
+        "level": "none",
+        "reason": "The loop performs only lightweight local arithmetic and contains no identified external or model resource activity."
+      }
+    },
+    {
+      "file": "fixtures/negative/local-promise-all.ts",
+      "expectedFindings": [],
+      "expectedAssessment": {
+        "level": "none",
+        "reason": "Promise.all is used only for lightweight local computation, so concurrency alone is not a sustainability concern."
+      }
+    },
+    {
+      "file": "fixtures/negative/unused-llm-function.ts",
+      "expectedFindings": [],
+      "expectedAssessment": {
+        "level": "none",
+        "reason": "The model-call wrapper is defined but has no reachable invocation in this fixture."
+      },
+      "notes": "v0.1 may emit a low-confidence potential finding until reachability analysis is implemented."
+    },
+    {
+      "file": "fixtures/negative/bounded-single-call.ts",
+      "expectedFindings": [
+        {
+          "ruleId": "SUS005",
+          "kind": "controlled-network-call",
+          "line": 9,
+          "callee": "fetch",
+          "resourceActivity": {
+            "type": "network",
+            "operation": "http-request"
+          },
+          "amplificationFactors": {
+            "insideLoop": false,
+            "retry": false,
+            "concurrent": false
+          },
+          "mitigations": {
+            "timeoutMs": 5000,
+            "abortController": true,
+            "abortSignal": true,
+            "clearsTimeout": true
+          },
+          "assessment": {
+            "level": "controlled",
+            "isSustainabilityConcern": false,
+            "reason": "The network request is executed once and is bounded by a timeout and cancellation signal."
+          }
+        }
+      ]
+    }
+  ]
+}

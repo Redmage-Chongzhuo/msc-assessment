@@ -1,0 +1,104 @@
+Tool-use agent loop findings
+
+1. The main query flow contains a state-driven:
+   while (true)
+
+2. Each iteration calls the model through:
+   deps.callModel(...)
+
+3. Assistant response blocks are inspected for:
+   content.type === 'tool_use'
+
+4. When one or more tool_use blocks are found:
+   - they are collected in toolUseBlocks
+   - needsFollowUp is set to true
+   - tools may begin executing through StreamingToolExecutor
+
+5. If needsFollowUp remains false after streaming, the loop normally exits through completion or an error/recovery path.
+
+6. When tool use is required, tools are executed through:
+   - StreamingToolExecutor.getRemainingResults(), or
+   - runTools(...)
+
+7. Tool results are appended with the assistant tool_use messages:
+   messagesForQuery + assistantMessages + toolResults
+
+8. A new state is created with:
+   transition: { reason: 'next_turn' }
+
+9. The updated state is assigned back to the while loop, causing another model request. This forms the agentic loop:
+   model request
+   -> tool_use
+   -> tool execution
+   -> tool_result
+   -> next model request
+
+10. The loop supports a maxTurns limit. When configured and exceeded, it exits with:
+    reason: 'max_turns'
+
+11. Other confirmed exit paths include:
+    - blocking_limit
+    - image_error
+    - model_error
+    - aborted_streaming
+    - prompt_too_long
+    - stop_hook_prevented
+    - completed
+    - aborted_tools
+    - hook_stopped
+
+12. Additional retry/continuation paths can cause extra model requests, including:
+    - model fallback
+    - reactive compact retry
+    - max-output-token recovery
+    - stop-hook blocking continuation
+    - token-budget continuation
+
+13. Tool execution errors are caught and converted into:
+    tool_result blocks with is_error: true
+
+14. This means a failed tool usually does not terminate the whole loop. The model receives the error result and may retry, choose another tool, or stop.
+
+15. Tool calls are partitioned into serial and concurrent batches.
+
+16. A tool is considered concurrency-safe only when:
+    - its input schema parses successfully
+    - tool.isConcurrencySafe(...) returns true
+
+17. If parsing fails or the concurrency check throws, execution falls back to serial mode.
+
+18. Consecutive concurrency-safe tools are grouped and executed concurrently.
+
+19. Concurrent tool execution uses a capped generator scheduler:
+    all(..., getMaxToolUseConcurrency())
+
+20. The default maximum tool concurrency is:
+    10
+
+21. It can be overridden through:
+    CLAUDE_CODE_MAX_TOOL_USE_CONCURRENCY
+
+22. Concurrent tool context modifications are queued and applied after the batch, reducing interleaved state updates.
+
+23. The concurrent scheduler uses Promise.race(...) and starts a waiting tool only when a concurrency slot becomes available.
+
+24. The scheduler has no explicit shared try/finally cleanup for remaining generators if one generator rejects. Actual impact depends on runToolUse error handling and AbortSignal propagation.
+
+25. runToolUse checks the shared AbortSignal before execution and returns an error tool_result for cancelled tools.
+
+26. Unknown tools, permission denials, and execution exceptions are also converted into tool_result messages.
+
+27. Bash tool execution passes both an AbortSignal and timeout to the process executor.
+
+28. Bash timeout configuration:
+    - default timeout: 120,000 ms (2 minutes)
+    - maximum timeout: 600,000 ms (10 minutes)
+    - BASH_DEFAULT_TIMEOUT_MS can override the default
+    - BASH_MAX_TIMEOUT_MS can override the maximum
+    - the maximum is always at least as large as the default
+
+29. Bash commands may run in the background or be automatically backgrounded when allowed. Background tasks can be disabled through:
+    CLAUDE_CODE_DISABLE_BACKGROUND_TASKS
+
+30. Sustainability relevance:
+    The tool-use agent loop can multiply model inference, tool execution, subprocess, network, and file-system activity across multiple turns. Multiple tool calls in one turn may also run concurrently. The implementation limits uncontrolled growth through maxTurns, AbortSignal cancellation, serial execution for unsafe tools, a concurrency cap, Bash timeouts, error conversion, hook-based stopping, and local completion checks. However, when maxTurns is not configured, continuation remains driven by model tool use, recovery paths, and hook behavior.

@@ -1,0 +1,22 @@
+Bridge polling findings
+
+1. pollForWork() sends an external HTTP GET request to:
+   https://api.anthropic.com/v1/environments/{environmentId}/work/poll
+
+2. The request is executed inside a while loop and continues until the loop is aborted.
+
+3. When no work is available and the bridge is not at capacity, the default polling interval is 2000 ms (2 seconds).
+
+4. This gives an approximate theoretical rate of:
+   - 30 polling requests per minute
+   - 1,800 polling requests per hour
+
+5. When the bridge is at capacity, the default polling interval is 600,000 ms (10 minutes).
+
+6. Polling intervals can be changed remotely through the GrowthBook feature flag:
+   tengu_bridge_poll_interval_config
+
+7. The remote configuration is refreshed every 5 minutes. Invalid or missing configurations fall back to default values.
+
+8. Sustainability relevance:
+   The polling loop creates continuous network and server activity. The code reduces unnecessary requests by adding delays and greatly reducing the polling frequency when at capacity.
