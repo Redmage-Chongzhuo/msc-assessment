@@ -1,0 +1,179 @@
+LLM API Call-Site Findings
+==========================
+
+Source project:
+Claude Code reconstructed TypeScript source
+
+Primary files:
+- src/query.ts
+- src/query/deps.ts
+- src/services/api/claude.ts
+
+1. Main agent-loop call site
+----------------------------
+
+src/query.ts:241
+- queryLoop(...) is the main query loop.
+
+src/query.ts:659
+- The loop calls the model indirectly through:
+  deps.callModel(...)
+
+Inputs passed include:
+- messages
+- systemPrompt
+- thinkingConfig
+- tools
+- AbortSignal
+- model
+- fallbackModel
+- querySource
+- MCP tools
+- agentId
+- taskBudget
+
+2. Dependency binding
+---------------------
+
+src/query.ts:263
+- Dependencies are selected using:
+  const deps = params.deps ?? productionDeps()
+
+src/query/deps.ts:23
+- QueryDeps defines:
+  callModel: typeof queryModelWithStreaming
+
+src/query/deps.ts:35
+- The production implementation binds:
+  callModel: queryModelWithStreaming
+
+This means the main loop does not directly reference the real model function.
+The function is reached through object-property dependency injection.
+
+3. Streaming wrapper
+--------------------
+
+src/services/api/claude.ts:752
+- queryModelWithStreaming(...) receives:
+  messages, systemPrompt, thinkingConfig, tools, signal and options.
+
+It forwards the request through:
+- withStreamingVCR(...)
+- queryModel(...)
+
+src/services/api/claude.ts:1017
+- queryModel(...) builds the full Anthropic request.
+
+Important request information includes:
+- model
+- messages
+- system prompt
+- tool schemas
+- tool choice
+- max output tokens
+- thinking configuration
+- temperature
+- metadata
+- beta headers
+- output configuration
+- task budget
+- AbortSignal
+
+4. Final Anthropic SDK call sites
+--------------------------------
+
+src/services/api/claude.ts:555
+Purpose:
+- API-key verification
+
+Call:
+- anthropic.beta.messages.create(...)
+
+Static parameters:
+- model from getSmallFastModel()
+- fixed user message: "test"
+- max_tokens: 1
+- temperature: 1
+- optional beta headers
+- metadata
+
+Retry context:
+- Anthropic client maxRetries: 3
+- outer withRetry maxRetries: 2
+
+This call should be distinguished from normal user inference.
+
+src/services/api/claude.ts:864
+Purpose:
+- non-streaming fallback request
+
+Call:
+- anthropic.beta.messages.create(...)
+
+Static controls:
+- SDK maxRetries is set to 0
+- AbortSignal is supplied
+- timeout is fallbackTimeoutMs
+- model is normalised before the request
+
+The surrounding code implements its own retry and fallback behaviour.
+
+src/services/api/claude.ts:1822
+Purpose:
+- primary streaming model request
+
+Call structure:
+- anthropic.beta.messages.create(
+    { ...params, stream: true },
+    { signal, optional request-ID header }
+  ).withResponse()
+
+Static information:
+- streaming is enabled
+- AbortSignal is supplied
+- request parameters are assembled in queryModel(...)
+- the response includes headers, request ID and stream data
+
+5. Important static-analysis implications
+-----------------------------------------
+
+A scanner cannot rely only on direct calls to:
+- anthropic.beta.messages.create(...)
+
+The complete call chain is:
+
+queryLoop(...)
+→ deps.callModel(...)
+→ productionDeps()
+→ queryModelWithStreaming(...)
+→ queryModel(...)
+→ anthropic.beta.messages.create(...)
+
+The analyser therefore needs to consider:
+- SDK call recognition
+- wrapper functions
+- object-property function bindings
+- dependency injection
+- call purpose
+- streaming and non-streaming modes
+- statically visible parameters
+- unresolved runtime values
+
+6. Runtime information still required
+-------------------------------------
+
+Static analysis cannot determine:
+- actual number of model calls
+- actual prompt-token count
+- actual completion-token count
+- model latency
+- response size
+- whether fallback was used at runtime
+- actual retry count
+- provider-side hardware and energy use
+
+These values would require runtime instrumentation.
+
+Status:
+This is a manual source-code finding used to guide the first static analyser.
+It is not yet an automatically generated result.

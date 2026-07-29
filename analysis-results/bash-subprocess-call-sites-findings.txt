@@ -1,0 +1,200 @@
+Bash and Subprocess Call-Site Findings
+======================================
+
+Source project:
+Claude Code reconstructed TypeScript source
+
+Primary files:
+- src/tools/BashTool/BashTool.tsx
+- src/utils/Shell.ts
+- src/utils/ShellCommand.ts
+
+1. Bash tool entry point
+------------------------
+
+src/tools/BashTool/BashTool.tsx:624
+- BashTool.call(...) is the model-facing Bash tool execution entry point.
+
+Important input fields include:
+- command
+- timeout
+- run_in_background
+- dangerouslyDisableSandbox
+- description
+
+The tool also receives:
+- ToolUseContext
+- AbortController
+- progress callbacks
+- agent identity and application state
+
+2. Shell command orchestration
+------------------------------
+
+src/tools/BashTool/BashTool.tsx:826
+- runShellCommand(...) manages foreground and background execution.
+
+src/tools/BashTool/BashTool.tsx:881
+- The command is passed to:
+  exec(command, abortController.signal, 'bash', ...)
+
+Static information passed to exec includes:
+- command string
+- AbortSignal
+- shell type: bash
+- timeout
+- progress callback
+- sandbox selection
+
+The effective timeout is:
+- input timeout when supplied
+- otherwise getDefaultTimeoutMs()
+
+3. Background execution
+-----------------------
+
+Bash commands may execute in several modes:
+
+- normal foreground execution
+- explicit background execution through run_in_background
+- timeout-triggered background execution
+- user-triggered background execution
+- assistant-mode automatic backgrounding
+
+The assistant-mode blocking budget is:
+- 15000 ms
+- 15 seconds
+
+After this threshold, an eligible command may be moved to the background.
+
+Background tasks are registered through:
+- spawnShellTask(...)
+- backgroundExistingForegroundTask(...)
+
+Background tasks can be disabled through:
+- CLAUDE_CODE_DISABLE_BACKGROUND_TASKS
+
+4. Shell abstraction
+--------------------
+
+src/utils/Shell.ts:181
+- exec(...) is the shell execution abstraction.
+
+It receives:
+- command
+- AbortSignal
+- shell type
+- timeout and execution options
+
+The provider builds the final command through:
+- provider.buildExecCommand(...)
+
+The provider also supplies:
+- shell path
+- spawn arguments
+- environment overrides
+- detached-process behaviour
+
+The command may be wrapped by SandboxManager before process creation.
+
+5. Final operating-system process call
+--------------------------------------
+
+src/utils/Shell.ts:316
+- The final operating-system process is created through:
+  spawn(spawnBinary, shellArgs, ...)
+
+Static process configuration includes:
+- executable binary
+- argument list
+- current working directory
+- environment variables
+- stdin/stdout/stderr mode
+- detached mode
+- windowsHide
+
+Important environment values include:
+- SHELL
+- GIT_EDITOR=true
+- CLAUDECODE=1
+- optional CLAUDE_CODE_SESSION_ID
+- provider-specific overrides
+
+The AbortSignal is not passed directly to spawn.
+The implementation handles process-tree termination itself.
+
+6. Process wrapper
+------------------
+
+src/utils/Shell.ts:339
+- The spawned ChildProcess is wrapped by:
+  wrapSpawn(...)
+
+Inputs include:
+- child process
+- AbortSignal
+- command timeout
+- TaskOutput
+- automatic-background setting
+
+The wrapper is responsible for:
+- timeout handling
+- cancellation
+- output collection
+- process status
+- background transitions
+- final result construction
+
+7. Complete call chain
+----------------------
+
+BashTool.call(...)
+→ runShellCommand(...)
+→ exec(command, signal, 'bash', options)
+→ provider.buildExecCommand(...)
+→ spawn(spawnBinary, shellArgs, options)
+→ wrapSpawn(...)
+
+8. Important static-analysis implications
+-----------------------------------------
+
+A scanner should distinguish between:
+- the model-facing Bash tool call
+- the shell abstraction call
+- the final Node.js process spawn
+
+Reporting only spawn(...) would lose:
+- the original command string
+- model-facing tool metadata
+- timeout configuration
+- background intent
+- sandbox settings
+
+Reporting only BashTool.call(...) would not identify:
+- the actual operating-system process creation
+- executable and argument construction
+- working directory
+- environment configuration
+
+The analyser may therefore need linked findings or a call chain.
+
+9. Runtime information still required
+-------------------------------------
+
+Static analysis cannot determine:
+- actual execution count
+- actual duration
+- peak memory use
+- CPU utilisation
+- disk I/O
+- stdout and stderr size
+- whether automatic backgrounding occurred
+- whether the command was interrupted
+- actual child-process tree
+- hardware energy use
+
+These values would require runtime instrumentation.
+
+Status:
+This is a manual source-code finding used to guide the first static analyser.
+It is not yet an automatically generated result.

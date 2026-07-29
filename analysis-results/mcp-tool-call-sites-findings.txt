@@ -1,0 +1,253 @@
+MCP Tool Call-Site Findings
+===========================
+
+Source project:
+Claude Code reconstructed TypeScript source
+
+Primary file:
+- src/services/mcp/client.ts
+
+1. Model-facing MCP tool entry point
+------------------------------------
+
+src/services/mcp/client.ts:1833
+- The dynamically created MCP Tool object defines an async call(...) method.
+
+Important inputs include:
+- args: Record<string, unknown>
+- ToolUseContext
+- parent assistant message
+- progress callback
+
+Static information available through the closure includes:
+- MCP server name: client.name
+- MCP tool name: tool.name
+- tool input schema
+- tool annotations
+- fully qualified tool name
+
+The tool-use ID is extracted from the parent assistant message and added to:
+- _meta['claudecode/toolUseId']
+
+2. Session connection and retry
+-------------------------------
+
+src/services/mcp/client.ts:1859
+- MAX_SESSION_RETRIES = 1
+
+The MCP tool first calls:
+- ensureConnectedClient(client)
+
+It then calls:
+- callMCPToolWithUrlElicitationRetry(...)
+
+A session-level retry occurs only when:
+- the error is McpSessionExpiredError
+- attempt < MAX_SESSION_RETRIES
+
+This means:
+- one initial session attempt
+- at most one session-recovery retry
+
+The maximum session-level attempt count is therefore 2.
+
+3. URL elicitation wrapper
+--------------------------
+
+src/services/mcp/client.ts:1863
+- The model-facing tool calls:
+  callMCPToolWithUrlElicitationRetry(...)
+
+src/services/mcp/client.ts:2813
+- callMCPToolWithUrlElicitationRetry(...) is the wrapper definition.
+
+Inputs include:
+- connected MCP client
+- MCP connection
+- tool name
+- arguments
+- metadata
+- AbortSignal
+- application-state updater
+- progress callback
+- elicitation handler
+
+The function supports dependency injection through:
+- callToolFn
+
+The default binding is:
+- callToolFn = callMCPTool
+
+4. URL elicitation retry
+------------------------
+
+src/services/mcp/client.ts:2850
+- MAX_URL_ELICITATION_RETRIES = 3
+
+The wrapper initially calls:
+- callToolFn(...)
+
+It retries only when the error is:
+- ErrorCode.UrlElicitationRequired
+
+This retry is not a normal network retry.
+
+It occurs when:
+- the MCP tool requires the user to open or complete a URL interaction
+- hooks or the user process the elicitation
+- the same MCP tool is then called again
+
+Possible handling paths include:
+- automated elicitation hook
+- structured I/O handler
+- REPL elicitation queue
+- user acceptance
+- user decline
+- user cancellation
+
+If the interaction is accepted, the loop retries the tool call.
+
+If it is declined or cancelled, the wrapper returns explanatory content without retrying.
+
+The maximum URL-elicitation-level attempt count is:
+- one initial call
+- up to three retries
+- maximum 4 attempts
+
+5. Core MCP call wrapper
+------------------------
+
+src/services/mcp/client.ts:3029
+- callMCPTool(...) is the core MCP call wrapper.
+
+Inputs include:
+- client: ConnectedMCPServer
+- tool: string
+- args: Record<string, unknown>
+- optional meta
+- AbortSignal
+- optional progress callback
+
+The ConnectedMCPServer supplies:
+- SDK client
+- server name
+- server configuration
+
+The result may contain:
+- content
+- _meta
+- structuredContent
+
+6. Final MCP SDK call
+---------------------
+
+src/services/mcp/client.ts:3092
+- The final external MCP tool call is:
+
+client.callTool(
+  {
+    name: tool,
+    arguments: args,
+    _meta: meta
+  },
+  CallToolResultSchema,
+  {
+    signal,
+    timeout: timeoutMs,
+    onprogress
+  }
+)
+
+Static information includes:
+- server identity from the connected client
+- tool name
+- tool arguments
+- metadata
+- result schema
+- AbortSignal
+- timeout
+- progress callback
+
+7. Timeout handling
+-------------------
+
+The timeout value is obtained through:
+- getMcpToolTimeoutMs()
+
+The SDK call receives:
+- timeout: timeoutMs
+
+The code also creates its own timeout Promise and uses:
+
+Promise.race([
+  client.callTool(...),
+  timeoutPromise
+])
+
+This provides an additional timeout layer when the SDK timeout does not complete correctly.
+
+The timeout timer is cleared in finally.
+
+Long-running MCP calls also produce progress logging every:
+- 30000 ms
+- 30 seconds
+
+8. Complete call chain
+----------------------
+
+Model-generated MCP tool_use
+→ MCP Tool.call(...)
+→ ensureConnectedClient(...)
+→ callMCPToolWithUrlElicitationRetry(...)
+→ callMCPTool(...)
+→ Promise.race(...)
+→ client.callTool(...)
+
+9. Important static-analysis implications
+-----------------------------------------
+
+A scanner should not only report:
+- client.callTool(...)
+
+The upper layers provide important information about:
+- model-facing tool identity
+- MCP server name
+- tool name
+- input schema
+- arguments
+- metadata
+- session retry
+- URL elicitation retry
+- timeout
+- AbortSignal
+- progress handling
+
+The MCP path also demonstrates:
+- dynamically created tool objects
+- closure-captured server and tool metadata
+- wrapper functions
+- dependency injection
+- multiple nested retry mechanisms
+
+The analyser may need linked findings or a call-chain representation.
+
+10. Runtime information still required
+--------------------------------------
+
+Static analysis cannot determine:
+- actual number of MCP calls
+- whether session recovery occurred
+- whether URL elicitation occurred
+- actual retry count
+- actual duration
+- request and response size
+- memory use
+- remote server hardware use
+- remote server energy use
+- whether the user accepted or declined an elicitation
+
+These values would require runtime instrumentation.
+
+Status:
+This is a manual source-code finding used to guide the first static analyser.
+It is not yet an automatically generated result.
