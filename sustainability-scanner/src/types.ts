@@ -3,6 +3,7 @@ export type CallCategory =
   | 'llm'
   | 'mcp'
   | 'subprocess'
+  | 'agent'
 
 export type Finding = {
   file: string
