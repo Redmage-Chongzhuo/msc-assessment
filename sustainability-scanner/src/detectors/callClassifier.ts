@@ -44,12 +44,19 @@ export function classifyCall(
     return 'mcp'
   }
 
+  // Exclude RegExp.exec() (e.g. /pattern/.exec or someRegex.exec), which is
+  // unrelated to subprocess execution and was previously misclassified.
+  const isRegexExec = /^\/.*\/[a-z]*\.exec$/.test(expression)
+
   if (
-    expression === 'spawn' ||
-    expression === 'exec' ||
-    expression === 'execFile' ||
-    expression.endsWith('.spawn') ||
-    expression.endsWith('.exec')
+    !isRegexExec &&
+    (
+      expression === 'spawn' ||
+      expression === 'exec' ||
+      expression === 'execFile' ||
+      expression.endsWith('.spawn') ||
+      expression.endsWith('.exec')
+    )
   ) {
     return 'subprocess'
   }
